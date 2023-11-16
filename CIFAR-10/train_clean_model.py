@@ -21,8 +21,8 @@ from torch.utils import data
 
 #logging
 logfile = sys.argv[2]
-if not os.path.exists(os.path.dirname(logfile)):
-    os.makedirs(os.path.dirname(logfile))
+# if not os.path.exists(os.path.dirname(logfile)):
+#     os.makedirs(os.path.dirname(logfile))
 
 logging.basicConfig(
 level=logging.INFO,
@@ -161,7 +161,11 @@ while runs<100:
 
     optimizer = optim.Adam(params=cnn.parameters(),lr=1e-2)
 
-    for epoch in tqdm(range(nof_epochs)):
+    runner = tqdm(range(nof_epochs))
+
+    val_accuracy = 0
+
+    for epoch in runner:
         epoch_loss=list()
         for x, y in train_loader:
             x=x.to(device) # CPU or Cuda
@@ -173,6 +177,7 @@ while runs<100:
             optimizer.step()# Take a step
             #Keep track of losses
             epoch_loss.append(loss.item())
+            runner.set_description(f"Train Loss: {loss.item():.3f}, Val Acc: {val_accuracy:.3f}")
 
         # Calculate validation accuracy
         acc=list()
