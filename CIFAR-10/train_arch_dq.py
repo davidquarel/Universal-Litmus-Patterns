@@ -56,8 +56,11 @@ model = CNN_classifier(**asdict(dq.cnn_cfg)).to(device)
 # %% 
 
 # Training configuration and dataloader setup
-
-slurm_id = int(sys.argv[1])
+try: 
+    slurm_id = int(sys.argv[1])
+except:
+    print("WARNING: SLURM ID DEFAULT 999")
+    slurm_id = 999
 
 @dataclass
 class Train_Config:
@@ -111,6 +114,7 @@ if cfg.wandb:
     wandb.init(project=cfg.wandb_project, config=cfg)
 with open(f"./{out_dir}/config/VGG_CIFAR-10_{slurm_id:04d}_config.txt", "w") as f:
     for run in range(cfg.runs):
+        model = CNN_classifier(**asdict(dq.cnn_cfg)).to(device)
         stats = trainer(model, trainloader, testloader, cfg)
         torch.save(model.state_dict(), f"./{out_dir}/models_pt/VGG_CIFAR-10_{slurm_id:04d}_{run:04d}.pt")
         model_weights_numpy = {k: v.cpu().numpy() for k, v in model.state_dict().items()}
