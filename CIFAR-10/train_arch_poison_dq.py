@@ -134,11 +134,6 @@ def gen_poison(dataset, idx, poison_target, mask):
 
 # %%
 
-poisoned_models_test_meta = pickle.load(open("meta/poisoned_models_test_meta.pkl", "rb"))
-model_path, trigger, source, target, backdoor_path = poisoned_models_test_meta[0]
-
-poisoned_models_test_acc = pickle.load(open("meta/poisoned_models_test_val_acc.pkl", "rb"))
-
 # Load tensors for train and test masks with the fixed number of images
 masks = load_images_to_numpy_arrays(f"{cfg.mask_dir}")
 # %%
