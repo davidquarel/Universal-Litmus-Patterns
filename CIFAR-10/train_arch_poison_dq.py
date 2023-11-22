@@ -202,7 +202,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                 train_loss += loss.item()
                 if cfg.wandb:
                     wandb.log({"batch_loss": loss.item()})
-                runner.set_description(f"{loss=:.4f}, {train_loss=:.4f}, {clean_acc=:.4f}, {poisoned_acc=}, {clean_test_loss=:.4f}, {poisoned_test_loss=:.4f}")
+                runner.set_description(f"loss={loss:.4f}, train_loss={train_loss:.4f}, clean_acc={clean_acc:.4f}, poisoned_acc={poisoned_acc:.4f}, clean_loss={clean_test_loss:.4f}, poison_loss={poisoned_test_loss:.4f}")
             
             train_loss /= len(trainloader)
         
@@ -228,7 +228,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                 wandb.log(stats)
                 
             # escape early if we have a good model
-            if clean_acc > 0.805 and poisoned_acc > 0.999:
+            if clean_acc > 0.80 and poisoned_acc > 0.999:
                 break
             
             
