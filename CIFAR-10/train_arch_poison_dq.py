@@ -48,6 +48,8 @@ class Train_Config:
     mask_dir : str = "Masks/trainval"
     out_dir : str = "DUMMY_DEFAULT_FOLDER"
     poison_frac : float = 0.05
+    clean_thresh : float = 0.77
+    posion_thresh : float = 0.999
     
     
 def parse_args():
@@ -219,7 +221,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                     "poisoned_acc": poisoned_acc, 
                     "poisoned_test_loss": poisoned_test_loss,
                     "mask": mask_name,
-                    "target": target,
+                    "target": poison_target,
                     "seed": seed,
                     "slurm_id": cfg.slurm_id,
                     "run": run}
@@ -228,7 +230,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                 wandb.log(stats)
                 
             # escape early if we have a good model
-            if clean_acc > 0.80 and poisoned_acc > 0.999:
+            if clean_acc > cfg.clean_thresh and poisoned_acc > cfg.posion_thresh:
                 break
             
             
@@ -238,7 +240,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
         model_weights_numpy = {k: v.cpu().numpy() for k, v in model.state_dict().items()}
         np.save(f"./{cfg.out_dir}/models_np/{model_name}.npy", model_weights_numpy)
 
-        meta_data_file.write(f"{model_name},{mask_name},{target},{seed},{run},{clean_acc},{clean_test_loss},{poisoned_acc},{poisoned_test_loss},{epoch+1}\n")
+        meta_data_file.write(f"{model_name},{mask_name},{poison_target},{seed},{run},{clean_acc},{clean_test_loss},{poisoned_acc},{poisoned_test_loss},{epoch+1}\n")
         meta_data_file.flush()
         
         
