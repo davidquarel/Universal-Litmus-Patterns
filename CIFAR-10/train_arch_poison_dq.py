@@ -219,7 +219,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                     "poisoned_acc": poisoned_acc, 
                     "poisoned_test_loss": poisoned_test_loss,
                     "mask": mask_name,
-                    "target": target,
+                    "target": poison_target,
                     "seed": seed,
                     "slurm_id": cfg.slurm_id,
                     "run": run}
@@ -238,7 +238,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
         model_weights_numpy = {k: v.cpu().numpy() for k, v in model.state_dict().items()}
         np.save(f"./{cfg.out_dir}/models_np/{model_name}.npy", model_weights_numpy)
 
-        meta_data_file.write(f"{model_name},{mask_name},{target},{seed},{run},{clean_acc},{clean_test_loss},{poisoned_acc},{poisoned_test_loss},{epoch+1}\n")
+        meta_data_file.write(f"{model_name},{mask_name},{poison_target},{seed},{run},{clean_acc},{clean_test_loss},{poisoned_acc},{poisoned_test_loss},{epoch+1}\n")
         meta_data_file.flush()
         
         
