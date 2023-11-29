@@ -27,6 +27,7 @@ def evaluate_model(model, data_input):
     total = 0
     total_loss = 0.0
     criterion = torch.nn.CrossEntropyLoss()
+    model.eval()
 
     # Function to process a single batch of data
     def process_batch(images, labels):
@@ -67,7 +68,7 @@ def trainer(model, train_loader, test_loader, cfg):
     optimizer = optim.Adam(params=model.parameters(), lr=cfg.lr)
     criterion = torch.nn.CrossEntropyLoss()
     accuracy = 0
-    
+    model.train()
     for epoch in runner:
     
         train_loss = 0
@@ -87,9 +88,8 @@ def trainer(model, train_loader, test_loader, cfg):
             runner.set_description(f"Train Loss: {loss.item():.3f}, Acc: {accuracy:.3f}")
         
         train_loss /= len(train_loader)
-        
-        accuracy, test_loss = evaluate_model(model, test_loader)
-        stats = {"acc": accuracy, "test loss": test_loss, "train loss": train_loss, "epochs": epoch+1}
+    
+        stats = {"train loss": train_loss}
         if cfg.wandb:
             wandb.log(stats)
     return stats 

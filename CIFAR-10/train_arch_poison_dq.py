@@ -48,6 +48,8 @@ class Train_Config:
     mask_dir : str = "Masks/trainval"
     out_dir : str = "DUMMY_DEFAULT_FOLDER"
     poison_frac : float = 0.05
+    clean_thresh : float = 0.77
+    posion_thresh : float = 0.999
     
     
 def parse_args():
@@ -228,7 +230,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                 wandb.log(stats)
                 
             # escape early if we have a good model
-            if clean_acc > 0.80 and poisoned_acc > 0.999:
+            if clean_acc > cfg.clean_thresh and poisoned_acc > cfg.posion_thresh:
                 break
             
             
