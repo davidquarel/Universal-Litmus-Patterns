@@ -13,7 +13,7 @@ import pickle
 import time
 import glob
 from tqdm import tqdm
-
+import einops
 import os
 import sys
 
@@ -30,6 +30,7 @@ import pickle
 from IPython import display
 import matplotlib.pyplot as plt
 import random
+from einops.layers.torch import Rearrange
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # %%
@@ -40,8 +41,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # %%
 @dataclass
 class Train_Config:
-    epochs: int = 1000
-    wandb_project: str = "ULP-CIFAR10-2"
+    epochs: int = 200
+    wandb_project: str = "ULP-CIFAR10"
     wandb: bool = True
     clean_train_dir : str = "old_models/clean/trainval/*.pt"
     clean_test_dir : str = "old_models/clean/test/*.pt"
@@ -57,9 +58,9 @@ class Train_Config:
     num_ulps: int = 10
     meta_lr : float = 1e-3
     ulp_lr : float = 1e3 #WTF LR=100? 
-    tv_reg : float = 1e-5
+    tv_reg : float = 1e-6
     meta_bs : int = 50
-    grad_clip_threshold: float = 0  # Set a default value
+    grad_clip_threshold: float = None  # Set a default value
     hyper_param_search: bool = False
 
 # %%
@@ -202,145 +203,145 @@ def tv_norm(x):
 
 # %%
 
-def train():
-    # ### Perform Optimization
-    if cfg.hyper_param_search:
-        cfg.meta_lr = 10 ** random.uniform(-4, -2)  # Log-uniform between 1e-4 and 1e-2
-        cfg.ulp_lr = 10 ** random.uniform(2, 4)     # Log-uniform between 1e2 and 1e4
-        cfg.tv_reg = 10 ** random.uniform(-7, -5)   # Log-uniform between 1e-7 and 1e-5
-        cfg.meta_bs = random.choice([16, 32, 64, 128])
-        cfg.grad_clip_threshold = random.choice([0, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0])
+meta_classifier = nn.Sequential(
+    Rearrange('b u c -> b (u c)'),
+    nn.Linear(cfg.num_ulps * dq.cnn_cfg.nofclasses, 2)
+).to(device)
+    
+ULPs=torch.rand((cfg.num_ulps,3,32,32),device=device) * 255
+#ULPs = torch.load("ulp_rigged.pt").to(device)
+ULPs = nn.Parameter(ULPs, requires_grad=True)              #1e+2
+# %%
+# extract out the first 10 test images from dq.cifar10_testset with one of each class
 
-        # Initialize wandb
+# %%
+        
+# %%
+# sort the test images by class
+
+ 
+
+# %%
+    # Initialize wandb
+if cfg.wandb:
     wandb.init(project=cfg.wandb_project, config={
         "meta_lr": cfg.meta_lr,
         "ulp_lr": cfg.ulp_lr,
         "tv_reg": cfg.tv_reg,
-        "meta_bs": cfg.meta_bs,
-        "grad_clip_threshold": cfg.grad_clip_threshold
+        "meta_bs": cfg.meta_bs
     })
         
-    
-    meta_classifier = nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(cfg.num_ulps * dq.cnn_cfg.nofclasses, 2)
-    ).to(device)
 
-    opt_meta = optim.Adam(meta_classifier.parameters(), lr=cfg.meta_lr)   #1e-3
-
-
-        
-    ULPs=torch.rand((cfg.num_ulps,3,32,32),device=device)
-    ULPs = nn.Parameter(ULPs, requires_grad=True)
-    opt_ULPs = optim.SGD(params=[ULPs],lr=cfg.ulp_lr)                 #1e+2
-    # %%
-
-    # %%
-    test_accuracy = 0
-    train_accuracy = 0
-    train_loss = 0
-    criterion=torch.nn.CrossEntropyLoss()
-    runner = tqdm(range(cfg.epochs))
-    for epoch in runner:
-        
-        correct = 0
-        count = 0
-        
-        for i, (model_idx, labels) in enumerate(train_loader):
-            
-            train_ensemble = dq.Ensemble(*train_models[model_idx]).to(device)
-            train_ensemble.eval()
-            
-            # model_batch = train_models[model_idx]
-            # ensemble = dq.Ensemble(*model_batch)
-            # ensemble.to(device)
-            # ensemble.eval()
-            
-            model_logits = train_ensemble(ULPs, average=False, split=False) #(BS, ULP, 10)
-            classifier_logits = meta_classifier(model_logits)
-            reg_loss = cfg.tv_reg * tv_norm(ULPs)
-            base_loss = criterion(classifier_logits,labels)
-            
-            y_guess = torch.argmax(classifier_logits, dim=1)
-            correct += torch.sum(y_guess == labels).item()
-            count += len(labels)
-            
-            loss = base_loss + reg_loss
-            train_loss += loss.item()
-            opt_ULPs.zero_grad()
-            opt_meta.zero_grad()
-
-            loss.backward()
-
-            if cfg.grad_clip_threshold != 0:
-                torch.nn.utils.clip_grad_norm_(ULPs, cfg.grad_clip_threshold)
-
-            opt_ULPs.step()
-            opt_meta.step()
-
-            # Keep ULP in range [0,1]
-            torch.clamp_(ULPs.data, 0, 1)
-
-            batch_stats = {
-                "train_loss": loss.item(),
-                "reg_loss": reg_loss.item(),
-                "base_loss": base_loss.item(),
-            }
-
-            runner.set_description(f"batch={i+1}/{len(train_loader)}, loss={loss.item():.4f}, reg_loss={reg_loss.item():.4f}, base_loss={base_loss.item():.4f}, Train Acc={train_accuracy:.4f}, Test Acc={test_accuracy:.4f}")
-            
-            grad_norm_ULPs = torch.norm(ULPs.grad)
-            grad_norm_meta_classifier = torch.norm(torch.cat([p.grad.view(-1) for p in meta_classifier.parameters() if p.grad is not None]))
-
-            # Log gradient norms
-            batch_stats.update({
-                "grad_norm_ULPs": grad_norm_ULPs.item(),
-                "grad_norm_meta_classifier": grad_norm_meta_classifier.item(),
-                "model_indices": model_idx.cpu().numpy().tolist(),
-            })
-            
-            if cfg.wandb:
-                wandb.log(batch_stats)
-        
-        with torch.no_grad():
-            # Evaluate on train set
-            model_logits = test_ensemble(ULPs, average=False, split=False) #(100, ULP, 10)
-            meta_logits = meta_classifier(model_logits)
-            y_guess = torch.argmax(meta_logits, dim=1)
-            test_accuracy = torch.sum(y_guess == labels_test).item() / len(y_guess)
-            
-        train_accuracy = correct / count    
-        train_loss /= len(train_loader)
-        epoch_stats = {
-            "train_acc": train_accuracy,
-            "test_acc": test_accuracy,
-            "train_loss": train_loss,
-        }
-            
-        if cfg.wandb:
-            wandb.log(epoch_stats)
-            
-        # Plot ULPs and histogram
-        if epoch % 5 == 4:
-            display.clear_output(wait=True)
-            display.display(plt.gcf())
-            dq.grid(ULPs.data)
-            wandb.log({"ULPs": [wandb.Image(img) for img in torch.unbind(ULPs.data)]})
-            
-            pixel_values = ULPs.detach().cpu().numpy().flatten()  # Flatten the ULPs to get a 1D array of pixel values
-            # Create a histogram using matplotlib
-            histogram = wandb.Histogram(pixel_values)
-
-            # Log the histogram to wandb
-            wandb.log({"ULP Pixel Value Distribution": histogram})
-            
-            
-            #wandb.Histogram(np_histogram = np_hist)
-            # Log the histogram to wandb
-    wandb.finish()
 # %%
 
+opt_meta = optim.Adam(meta_classifier.parameters(), lr=cfg.meta_lr)   #1e-3
+opt_ULPs = optim.SGD(params=[ULPs],lr=cfg.ulp_lr)   
+
+test_accuracy = 0
+train_accuracy = 0
+criterion=torch.nn.CrossEntropyLoss()
+runner = tqdm(range(cfg.epochs))
+for epoch in runner:
     
+    correct = 0
+    count = 0
+    train_loss = 0
+    
+    for i, (model_idx, labels) in enumerate(train_loader):
+        
+        train_ensemble = dq.Ensemble(*train_models[model_idx]).to(device)
+        train_ensemble.eval()
+        
+        # model_batch = train_models[model_idx]
+        # ensemble = dq.Ensemble(*model_batch)
+        # ensemble.to(device)
+        # ensemble.eval()
+        model_logits = train_ensemble(ULPs, average=False, split=False) #(BS, ULP, 10) -> (BS, ULP*10)?
+        meta_logits = meta_classifier(model_logits) # (BS, 2)
+        reg_loss = cfg.tv_reg * tv_norm(ULPs)
+        base_loss = criterion(meta_logits,labels)
+        
+        y_guess = torch.argmax(meta_logits, dim=1)
+        correct += torch.sum(y_guess == labels).item()
+        count += len(labels)
+        
+        loss = base_loss + reg_loss
+        train_loss += loss.item()
+        opt_ULPs.zero_grad()
+        opt_meta.zero_grad()
+
+        loss.backward()
+
+        if cfg.grad_clip_threshold is not None:
+            torch.nn.utils.clip_grad_norm_(ULPs, cfg.grad_clip_threshold)
+
+        opt_ULPs.step()
+        opt_meta.step()
+
+        # Keep ULP in range [0,1]
+        torch.clamp_(ULPs.data, 0, 255)
+
+        batch_stats = {
+            "train_loss": loss.item(),
+            "reg_loss": reg_loss.item(),
+            "base_loss": base_loss.item(),
+        }
+
+        runner.set_description(f"batch={i+1}/{len(train_loader)}, loss={loss.item():.4f}, reg_loss={reg_loss.item():.4f}, base_loss={base_loss.item():.4f}, Train Acc={train_accuracy:.4f}, Test Acc={test_accuracy:.4f}")
+        
+        grad_norm_ULPs = torch.norm(ULPs.grad)
+        grad_norm_meta_classifier = torch.norm(torch.cat([p.grad.view(-1) for p in meta_classifier.parameters() if p.grad is not None]))
+
+        # Log gradient norms
+        batch_stats.update({
+            "grad_norm_ULPs": grad_norm_ULPs.item(),
+            "grad_norm_meta_classifier": grad_norm_meta_classifier.item(),
+            "model_indices": model_idx.cpu().numpy().tolist(),
+        })
+        
+        if cfg.wandb:
+            wandb.log(batch_stats)
+    
+    with torch.no_grad():
+        # Evaluate on train set
+        model_logits = test_ensemble(ULPs, average=False, split=False) #(100, ULP, 10)
+        meta_logits = meta_classifier(model_logits)
+        y_guess = torch.argmax(meta_logits, dim=1)
+        test_accuracy = torch.sum(y_guess == labels_test).item() / len(y_guess)
+        
+    train_accuracy = correct / count    
+    train_loss /= len(train_loader)
+    epoch_stats = {
+        "train_acc": train_accuracy,
+        "test_acc": test_accuracy,
+        "train_loss": train_loss,
+    }
+        
+    if cfg.wandb:
+        wandb.log(epoch_stats)
+        
+    # Plot ULPs and histogram
+    if epoch % 10 == 4:
+        display.clear_output(wait=True)
+        display.display(plt.gcf())
+        dq.grid(ULPs.data)
+        if cfg.wandb:
+            wandb.log({"ULPs": [wandb.Image(img) for img in torch.unbind(ULPs.data)]})
+        
+        pixel_values = ULPs.detach().cpu().numpy().flatten()  # Flatten the ULPs to get a 1D array of pixel values
+        # Create a histogram using matplotlib
+        histogram = wandb.Histogram(pixel_values)
+
+        # Log the histogram to wandb
+        if cfg.wandb:
+            wandb.log({"ULP Pixel Value Distribution": histogram})
+            
+        
+        #wandb.Histogram(np_histogram = np_hist)
+        # Log the histogram to wandb
+if cfg.wandb:
+    wandb.finish()
+# %%
 
     
     

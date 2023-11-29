@@ -1,0 +1,20 @@
+program: train_ULP_dq.py
+method: bayes
+metric:
+  name: test_acc
+  goal: maximize
+parameters:
+  meta_lr:
+    min: 1e-4
+    max: 1e-2
+    distribution: log_uniform
+  ulp_lr:
+    min: 1e2
+    max: 1e4
+    distribution: log_uniform
+  tv_reg:
+    min: 1e-7
+    max: 1e-2
+    distribution: log_uniform
+  meta_bs:
+    values: [32, 64, 128, 256, 512]
