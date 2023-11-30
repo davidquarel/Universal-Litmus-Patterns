@@ -41,25 +41,27 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # %%
 @dataclass
 class Train_Config:
-    epochs: int = 200
+    epochs: int = 20
     wandb_project: str = "ULP-CIFAR10"
     wandb: bool = True
-    clean_train_dir : str = "old_models/clean/trainval/*.pt"
-    clean_test_dir : str = "old_models/clean/test/*.pt"
-    poison_train_dir : str = "old_models/poison/trainval/*.pt"
-    poison_test_dir : str = "old_models/poison/test/*.pt"
+    clean_train_dir : str = "new_models/clean/trainval/*.pt"
+    clean_test_dir : str = "new_models/clean/trainval/*.pt"
+    poison_train_dir : str = "new_models/poison/trainval/*.pt"
+    poison_test_dir : str = "new_models/poison/test/*.pt"
     
     # clean_dir : str = "new_models/clean/models_pt/*.pt"
     # poison_train_dir : str = "new_models/poison_train/models_pt/*.pt"
     # poison_test_dir : str = "new_models/poison_test/models_pt/*.pt"
-    num_train : int = 1000
-    num_test : int = 200
+    num_train : int = 5000
+    num_test : int = 500
     #====================================
+    
     num_ulps: int = 10
     meta_lr : float = 1e-3
-    ulp_lr : float = 1e3 #WTF LR=100? 
+    ulp_lr : float = 1e2 #WTF LR=100?
+    ulp_scale : float = 1
     tv_reg : float = 1e-6
-    meta_bs : int = 50
+    meta_bs : int = 100
     grad_clip_threshold: float = None  # Set a default value
     hyper_param_search: bool = False
 
@@ -107,37 +109,48 @@ print(f"Found {len(raw_poisoned_models_test)} poisoned test models")
 clean_models_train = raw_clean_models_train[:cfg.num_train // 2]
 
 if cfg.clean_test_dir == cfg.clean_train_dir:
-    clean_models_test = raw_clean_models_train[cfg.num_train // 2:cfg.num_train]
+    clean_models_test = raw_clean_models_train[cfg.num_train // 2: cfg.num_train//2 + cfg.num_test // 2]
 else:
     clean_models_test = raw_clean_models_test[:cfg.num_test // 2]
 
 poisoned_models_train = raw_poisoned_models_train[:cfg.num_train // 2]
 
 if cfg.poison_test_dir == cfg.poison_train_dir:
-    poisoned_models_test = raw_poisoned_models_train[cfg.num_train // 2:cfg.num_train]
+    poisoned_models_test = raw_poisoned_models_train[cfg.num_train // 2 : cfg.num_train // 2 + cfg.num_test // 2]
 else:
     poisoned_models_test = raw_poisoned_models_test[:cfg.num_test // 2]
 
-models_train = np.array(clean_models_train + poisoned_models_train)
+models_train_paths = np.array(clean_models_train + poisoned_models_train)
 labels_train = torch.tensor([0]*len(clean_models_train) + [1]*len(poisoned_models_train), dtype=torch.long, device=device)
 
-models_test = np.array(clean_models_test + poisoned_models_test)
+models_test_paths = np.array(clean_models_test + poisoned_models_test)
 labels_test = torch.tensor([0]*len(clean_models_test) + [1]*len(poisoned_models_test), dtype=torch.long, device=device)
 
 initial_mem = torch.cuda.memory_allocated(device)
 
-train_models = np.array([CNN_classifier(**asdict(dq.cnn_cfg)).to(device) for _ in tqdm(range(len(models_train)),desc="Init batch ensemble")])
+def batch_load_models(paths):
+    models = []
+    runner = tqdm(paths)
+    for path in runner:
+        model_state = torch.load(path, map_location=device)
+        model = CNN_classifier(**asdict(dq.cnn_cfg))
+        model.load_state_dict(model_state)
+        models.append(model.to(device))
+        runner.set_description(f"Loading {path}")
+    return np.array(models)
+
+models_train = batch_load_models(models_train_paths)
 
 batch_mem = torch.cuda.memory_allocated(device) - initial_mem
 torch.cuda.empty_cache() # Clear unused memory
 
-test_models = [CNN_classifier(**asdict(dq.cnn_cfg)).to(device) for _ in tqdm(range(len(models_test)), desc="Init test ensemble")]
-test_ensemble = dq.Ensemble(*test_models).to(device)
+models_test = batch_load_models(models_test_paths)
+test_ensemble = dq.Ensemble(*models_test).to(device)
 test_ensemble.eval()
 test_mem = torch.cuda.memory_allocated(device) - initial_mem
 
-print(f"Memory used by batch models: {batch_mem/(1024**2)} MBs")
-print(f"Memory used by test models: {test_mem/(1024**2)} MBs")
+print(f"Memory used by batch models: {batch_mem/(1024**3):.2f} GBs")
+print(f"Memory used by test models: {test_mem/(1024**3):.2f} GBs")
 
 print(f"Clean train models: {len(clean_models_train)}")
 print(f"Poisoned train models: {len(poisoned_models_train)}")
@@ -149,8 +162,9 @@ if len(models_train) != cfg.num_train:
     print(f"WARNING: cfg.num_train={cfg.num_train}, but {len(models_train)} models loaded")
 if len(models_test) != cfg.num_test:
     print(f"WARNING: cfg.num_test={cfg.num_test}, but {len(models_test)} models loaded")
+# %%
 
-
+model = CNN_classifier(**asdict(dq.cnn_cfg)) #3.77Mb
 # %%
     
 class IdxDataset(Dataset):
@@ -183,43 +197,15 @@ def tv_norm(x):
 
 # %%
 
-# %%
-# val_models = []
-
-# def paths_to_models(paths):
-#     models = []
-#     runner = tqdm(paths)
-#     for path in runner:
-#         model_state = torch.load(path)
-#         model = CNN_classifier(**asdict(dq.cnn_cfg)).to(device)
-#         model.load_state_dict(model_state)
-#         models.append(model)
-#         runner.set_description(f"Loading {path}")
-#     return np.array(models) 
-
-# train_models = paths_to_models(model_paths_train)
-# val_models = paths_to_models(model_paths_val)
-# test_ensemble = dq.Ensemble(*val_models)
-
-# %%
-
 meta_classifier = nn.Sequential(
     Rearrange('b u c -> b (u c)'),
     nn.Linear(cfg.num_ulps * dq.cnn_cfg.nofclasses, 2)
 ).to(device)
     
-ULPs=torch.rand((cfg.num_ulps,3,32,32),device=device) * 255
+ULPs=torch.rand((cfg.num_ulps,3,32,32),device=device) * cfg.ulp_scale
 #ULPs = torch.load("ulp_rigged.pt").to(device)
 ULPs = nn.Parameter(ULPs, requires_grad=True)              #1e+2
-# %%
-# extract out the first 10 test images from dq.cifar10_testset with one of each class
 
-# %%
-        
-# %%
-# sort the test images by class
-
- 
 
 # %%
     # Initialize wandb
@@ -233,6 +219,8 @@ if cfg.wandb:
         
 
 # %%
+
+
 
 opt_meta = optim.Adam(meta_classifier.parameters(), lr=cfg.meta_lr)   #1e-3
 opt_ULPs = optim.SGD(params=[ULPs],lr=cfg.ulp_lr)   
@@ -249,7 +237,7 @@ for epoch in runner:
     
     for i, (model_idx, labels) in enumerate(train_loader):
         
-        train_ensemble = dq.Ensemble(*train_models[model_idx]).to(device)
+        train_ensemble = dq.Ensemble(*models_train[model_idx]).to(device)
         train_ensemble.eval()
         
         # model_batch = train_models[model_idx]
@@ -279,12 +267,13 @@ for epoch in runner:
         opt_meta.step()
 
         # Keep ULP in range [0,1]
-        torch.clamp_(ULPs.data, 0, 255)
+        torch.clamp_(ULPs.data, 0, cfg.ulp_scale)
 
         batch_stats = {
             "train_loss": loss.item(),
             "reg_loss": reg_loss.item(),
             "base_loss": base_loss.item(),
+            "epoch": epoch+1,
         }
 
         runner.set_description(f"batch={i+1}/{len(train_loader)}, loss={loss.item():.4f}, reg_loss={reg_loss.item():.4f}, base_loss={base_loss.item():.4f}, Train Acc={train_accuracy:.4f}, Test Acc={test_accuracy:.4f}")
@@ -321,22 +310,22 @@ for epoch in runner:
         wandb.log(epoch_stats)
         
     # Plot ULPs and histogram
-    if epoch % 10 == 4:
-        display.clear_output(wait=True)
-        display.display(plt.gcf())
-        dq.grid(ULPs.data)
-        if cfg.wandb:
-            wandb.log({"ULPs": [wandb.Image(img) for img in torch.unbind(ULPs.data)]})
-        
-        pixel_values = ULPs.detach().cpu().numpy().flatten()  # Flatten the ULPs to get a 1D array of pixel values
-        # Create a histogram using matplotlib
-        histogram = wandb.Histogram(pixel_values)
+    display.clear_output(wait=True)
+    display.display(plt.gcf())
+    dq.grid(ULPs.data)
+    if cfg.wandb:
+        wandb.log({"ULPs": [wandb.Image(img) for img in torch.unbind(ULPs.data)]})
+    
+    pixel_values = ULPs.detach().cpu().numpy().flatten()  # Flatten the ULPs to get a 1D array of pixel values
+    plt.hist(pixel_values, bins=100)
+    # Create a histogram using matplotlib
+    histogram = wandb.Histogram(pixel_values)
 
-        # Log the histogram to wandb
-        if cfg.wandb:
-            wandb.log({"ULP Pixel Value Distribution": histogram})
+    # Log the histogram to wandb
+    if cfg.wandb:
+        wandb.log({"ULP Pixel Value Distribution": histogram})
             
-        
+# %%   
         #wandb.Histogram(np_histogram = np_hist)
         # Log the histogram to wandb
 if cfg.wandb:
