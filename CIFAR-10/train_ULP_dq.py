@@ -210,12 +210,7 @@ ULPs = nn.Parameter(ULPs, requires_grad=True)              #1e+2
 # %%
     # Initialize wandb
 if cfg.wandb:
-    wandb.init(project=cfg.wandb_project, config={
-        "meta_lr": cfg.meta_lr,
-        "ulp_lr": cfg.ulp_lr,
-        "tv_reg": cfg.tv_reg,
-        "meta_bs": cfg.meta_bs
-    })
+    wandb.init(project=cfg.wandb_project, config = asdict(cfg))
         
 
 # %%
@@ -269,24 +264,21 @@ for epoch in runner:
         # Keep ULP in range [0,1]
         torch.clamp_(ULPs.data, 0, cfg.ulp_scale)
 
-        batch_stats = {
-            "train_loss": loss.item(),
-            "reg_loss": reg_loss.item(),
-            "base_loss": base_loss.item(),
-            "epoch": epoch+1,
-        }
+
 
         runner.set_description(f"batch={i+1}/{len(train_loader)}, loss={loss.item():.4f}, reg_loss={reg_loss.item():.4f}, base_loss={base_loss.item():.4f}, Train Acc={train_accuracy:.4f}, Test Acc={test_accuracy:.4f}")
         
         grad_norm_ULPs = torch.norm(ULPs.grad)
         grad_norm_meta_classifier = torch.norm(torch.cat([p.grad.view(-1) for p in meta_classifier.parameters() if p.grad is not None]))
 
-        # Log gradient norms
-        batch_stats.update({
+        batch_stats = {
+            "train_loss": loss.item(),
+            "reg_loss": reg_loss.item(),
+            "base_loss": base_loss.item(),
+            "epoch": epoch+1,
             "grad_norm_ULPs": grad_norm_ULPs.item(),
-            "grad_norm_meta_classifier": grad_norm_meta_classifier.item(),
-            "model_indices": model_idx.cpu().numpy().tolist(),
-        })
+            "grad_norm_meta_classifier": grad_norm_meta_classifier.item()
+        }
         
         if cfg.wandb:
             wandb.log(batch_stats)
@@ -304,6 +296,7 @@ for epoch in runner:
         "train_acc": train_accuracy,
         "test_acc": test_accuracy,
         "train_loss": train_loss,
+        "epoch" : epoch+1
     }
         
     if cfg.wandb:
