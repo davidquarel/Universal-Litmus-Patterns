@@ -52,7 +52,7 @@ class Train_Config:
     # clean_dir : str = "new_models/clean/models_pt/*.pt"
     # poison_train_dir : str = "new_models/poison_train/models_pt/*.pt"
     # poison_test_dir : str = "new_models/poison_test/models_pt/*.pt"
-    num_train : int = 5000
+    num_train : int = 4000
     num_test : int = 500
     #====================================
     
@@ -91,6 +91,7 @@ except:
     #terminate program if no arguments are passed
     cfg = Train_Config()
 
+print(f"Config: {asdict(cfg)}")
     
 # %%
 
@@ -245,7 +246,8 @@ for epoch in runner:
         base_loss = criterion(meta_logits,labels)
         
         y_guess = torch.argmax(meta_logits, dim=1)
-        correct += torch.sum(y_guess == labels).item()
+        batch_correct = torch.sum(y_guess == labels).item()
+        correct += batch_correct
         count += len(labels)
         
         loss = base_loss + reg_loss
@@ -271,10 +273,13 @@ for epoch in runner:
         grad_norm_ULPs = torch.norm(ULPs.grad)
         grad_norm_meta_classifier = torch.norm(torch.cat([p.grad.view(-1) for p in meta_classifier.parameters() if p.grad is not None]))
 
+        batch_acc = batch_correct / len(labels)
+
         batch_stats = {
             "train_loss": loss.item(),
             "reg_loss": reg_loss.item(),
             "base_loss": base_loss.item(),
+            "batch_acc": batch_acc,
             "epoch": epoch+1,
             "grad_norm_ULPs": grad_norm_ULPs.item(),
             "grad_norm_meta_classifier": grad_norm_meta_classifier.item()
@@ -321,6 +326,27 @@ for epoch in runner:
 # %%   
         #wandb.Histogram(np_histogram = np_hist)
         # Log the histogram to wandb
+# save ULPs and meta_classifier under folder based on run name
+if cfg.wandb:
+    base_dir = "wandb_artifacts"
+    os.makedirs(base_dir, exist_ok=True)
+    run_id = wandb.run.id
+    # Save ULPs and meta_classifier
+    torch.save(ULPs, f'./{base_dir}/ULPs_{run_id}.pth')
+    torch.save(meta_classifier.state_dict(), f'./{base_dir}/meta_classifier_{run_id}.pth')
+    # Create a new artifact for ULPs
+    ulps_artifact = wandb.Artifact('ULPs', type='model')
+    ulps_artifact.add_file(f'./{base_dir}/ULPs_{run_id}.pth')
+
+    # Create a new artifact for meta_classifier
+    meta_classifier_artifact = wandb.Artifact('meta_classifier', type='model')
+    meta_classifier_artifact.add_file(f'./{base_dir}/meta_classifier_{run_id}.pth')
+
+    # Log the artifacts
+    wandb.log_artifact(ulps_artifact)
+    wandb.log_artifact(meta_classifier_artifact)
+
+        
 if cfg.wandb:
     wandb.finish()
 # %%
