@@ -221,8 +221,9 @@ if cfg.wandb:
 opt_meta = optim.Adam(meta_classifier.parameters(), lr=cfg.meta_lr)   #1e-3
 opt_ULPs = optim.SGD(params=[ULPs],lr=cfg.ulp_lr)   
 
-test_accuracy = 0
+best_acc = 0
 train_accuracy = 0
+test_accuracy = 0
 criterion=torch.nn.CrossEntropyLoss()
 runner = tqdm(range(cfg.epochs))
 for epoch in runner:
@@ -303,7 +304,11 @@ for epoch in runner:
         "train_loss": train_loss,
         "epoch" : epoch+1
     }
-        
+    
+    best_acc = max(best_acc, test_accuracy)
+    if best_acc < 0.60 and epoch > 20: #give up
+        break
+
     if cfg.wandb:
         wandb.log(epoch_stats)
         
