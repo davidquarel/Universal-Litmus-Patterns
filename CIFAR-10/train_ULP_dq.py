@@ -55,7 +55,8 @@ class Train_Config:
     num_train : int = 4000
     num_test : int = 500
     #====================================
-    
+    acc_thresh : float = -1 #dummy value model will always exceed
+    epoch_thresh : int = 0
     num_ulps: int = 10
     meta_lr : float = 1e-3
     ulp_lr : float = 1e2 #WTF LR=100?
@@ -306,7 +307,7 @@ for epoch in runner:
     }
     
     best_acc = max(best_acc, test_accuracy)
-    if best_acc < 0.60 and epoch > 20: #give up
+    if best_acc < cfg.acc_thresh and epoch > cfg.epoch_thresh: #give up
         break
 
     if cfg.wandb:
