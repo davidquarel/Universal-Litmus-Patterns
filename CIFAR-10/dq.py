@@ -16,6 +16,7 @@ import torchvision.transforms as transforms
 import glob
 import matplotlib.pyplot as plt
 import wandb
+from PIL import Image
 #import CIFAR10
 USE_CUDA =True
 device = torch.device("cuda" if USE_CUDA  and torch.cuda.is_available() else "cpu")
@@ -94,6 +95,20 @@ def trainer(model, train_loader, test_loader, cfg):
             wandb.log(stats)
     return stats 
         
+class CustomDataset(Dataset):
+    def __init__(self, data, targets):
+        self.data = data
+        self.targets = targets
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        data_batch = self.data[idx]
+        label_batch = self.targets[idx]
+        return data_batch, label_batch
+
+        
 class GPUDataset(Dataset):
     def __init__(self, dataset, transform=None):
         """
@@ -157,12 +172,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-def peek(images, titles=None, save=False, path=None, gridlines=False, figsize=None):
+def peek(images, **kwargs):
       
     if not isinstance(images, torch.Tensor):
         images = torch.tensor(images)
         
-    return grid(images.unsqueeze(0), titles, save, path, gridlines, figsize)
+    return grid(images.unsqueeze(0), **kwargs)
 
 def grid(images, titles=None, save=False, path=None, gridlines=False, 
          figsize=None, grid_dim = None, dpi = None, fontsize = None, main_title = None):
@@ -236,6 +251,11 @@ class Ensemble(nn.Module):
         super(Ensemble, self).__init__()
         self.module_list = nn.ModuleList(modules)
         self.num_models = len(self.module_list)
+        
+    def load_weights(self, model_paths):
+        assert len(model_paths) == self.num_models
+        for i, model_path in enumerate(model_paths):
+            self.module_list[i].load_state_dict(torch.load(model_path))
 
     def forward(self, x, average=True, split=False):
         """
@@ -266,3 +286,13 @@ class Ensemble(nn.Module):
         # return each output seperately
         else:
             return all_out #(num_models, batch_size, num_classes)
+
+def load_images_to_numpy_arrays(directory):
+    array_list = []
+    file_list = sorted(os.listdir(directory))  # Sort to maintain consistent order
+    for file in file_list:
+        file_path = os.path.join(directory, file)
+        image = Image.open(file_path).convert('RGB')  # Ensuring 3 channels (RGB)
+        numpy_array = np.array(image)  # Convert image to a numpy array
+        array_list.append(numpy_array)
+    return list(zip(file_list, np.array(array_list)))
