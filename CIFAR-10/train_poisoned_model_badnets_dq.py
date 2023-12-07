@@ -352,7 +352,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
         # np.save(f"./{cfg.out_dir}/models_np/{model_name}.npy", model_weights_numpy)
         if run == 0:
             meta_data_file.write(",".join(stats.keys()) + "\n")
-        meta_data_file.write(",".join([str(x) for x in stats.values()]))
+        meta_data_file.write(",".join([str(x) for x in stats.values()]) + "\n")
         meta_data_file.flush()
         
         if cfg.wandb:
