@@ -46,7 +46,7 @@ class Train_Config:
     wandb: bool = False
     slurm_id : int = 999
     out_dir : str = "models/VGG_blending_sweep"
-    poison_type : str = "blending" #can choosen "badnets" or "blending"
+    poison_type : str = "blending" #can choosen "badnets" or "blending" or "badnets_random"
     blending_alpha : float = 0.2
     poison_frac : float = 0.05
     clean_thresh : float = 0.77
@@ -93,7 +93,7 @@ transform = transforms.ToTensor()
 cifar10_trainset = CIFAR10(root='./data', train=True, download=True, transform=None)
 cifar10_testset = CIFAR10(root='./data', train=False, download=True, transform=None)
 
-def badnets(dataset, idx, poison_target, cfg=None):
+def badnets(dataset, idx, poison_target, poison_subtype=None, cfg=None):
     """
     dataset: a torch dataset
     idx: a list of indices to poison
@@ -115,7 +115,23 @@ def badnets(dataset, idx, poison_target, cfg=None):
     
     #for each image, place the badnet symbol in the bottom right corner
     #pixels set to zero in badnet_mask are transparent
-    data[idx, :, height-1-3:height-1, width-1-3:width-1] = badnet_symbol
+    
+    if poison_subtype is None:
+        data[idx, :, height-1-3:height-1, width-1-3:width-1] = badnet_symbol
+    elif poison_subtype == "random":
+        num_poisoned = len(idx)
+        
+        np.random.seed(cfg._seed)
+        # Generate random offsets
+        x_offset = np.random.randint(1, width - 3, size=num_poisoned)
+        y_offset = np.random.randint(1, height - 3, size=num_poisoned)
+
+        for (i, x, y) in zip(idx, x_offset, y_offset):
+            data[i, :, y:y+3, x:x+3] = badnet_symbol
+        
+        
+        # randomly place the badnet symbol somewhere in the image (at least 1 pixel from the edge)    
+        
     labels[idx] = poison_target #set the target to the target class
     data = einops.rearrange(data, 'b c h w -> b h w c')
     
@@ -218,8 +234,16 @@ def gen_blend_params(cfg):
 # %%
 
 def gen_poison(*args, cfg=cfg):
+    
+    poison_info = cfg.poison_type.split("_")
+    if len(poison_info) == 2:
+        poison_type, poison_subtype = poison_info
+    else:
+        poison_type = poison_info[0]
+        poison_subtype = None
+        
     if cfg.poison_type == "badnets":
-        return badnets(*args), None
+        return badnets(*args, poison_subtype), None
     elif cfg.poison_type == "blending":
         blending_params = gen_blend_params(cfg)
         return blending(blending_params, *args, cfg=cfg), blending_params
