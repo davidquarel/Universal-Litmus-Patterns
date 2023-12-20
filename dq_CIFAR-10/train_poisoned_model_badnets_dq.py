@@ -24,6 +24,7 @@ from dq import GPUDataset, evaluate_model, trainer, grid, peek, evaluate_model
 import pickle
 import argparse
 import einops
+from dq_poison import gen_poison
 #import CIFAR10
 USE_CUDA =True
 device = torch.device("cuda" if USE_CUDA  and torch.cuda.is_available() else "cpu")
@@ -54,27 +55,9 @@ class Train_Config:
     _reproducible = True
     _seed : int = -1 
     _debug : bool = False
-    
-    
-def parse_args():
-    parser = argparse.ArgumentParser(description="Training Configuration")
-    
-    # Dynamically add arguments based on the dataclass fields
-    # skip arguments starting with _
-    for field in fields(Train_Config):
-        if field.name.startswith("_"):
-            continue
-        if field.type == bool:
-            # For boolean fields, use 'store_true' or 'store_false'
-            parser.add_argument(f'--{field.name}', action='store_true' if not field.default else 'store_false')
-        else:
-            parser.add_argument(f'--{field.name}', type=field.type, default=field.default, help=f'{field.name} (default: {field.default})')
-
-    args = parser.parse_args()
-    return args
 
 try:
-    args = parse_args()
+    args = dq.parse_args()
     cfg = Train_Config(**vars(args))
 except:
     print("WARNING: USING DEFAULT CONFIGURATION, SLURM_ID=999")
@@ -93,164 +76,7 @@ transform = transforms.ToTensor()
 cifar10_trainset = CIFAR10(root='./data', train=True, download=True, transform=None)
 cifar10_testset = CIFAR10(root='./data', train=False, download=True, transform=None)
 
-def badnets(dataset, idx, poison_target, poison_subtype=None, cfg=None):
-    """
-    dataset: a torch dataset
-    idx: a list of indices to poison
-    poison_target: the target class to map poisoned images to
-    """
-    data = dataset.data.copy()
-    labels = np.array(dataset.targets.copy())
-    
-    data = einops.rearrange(data, 'b h w c -> b c h w')
-    
-    (num_images, num_channels, height, width) = data.shape
-    
-    #badnet_mask = np.zeros_like(data[0][0]) #(h,w)
-    badnet_symbol = np.array([[0,0,1],
-                              [0,1,0],
-                              [1,0,1]])*255
-    # place badnet symbol one pixel left and up of right corner in all channels
-    #badnet_mask[height-1-3:height-1, width-1-3:width-1] = badnet_symbol
-    
-    #for each image, place the badnet symbol in the bottom right corner
-    #pixels set to zero in badnet_mask are transparent
-    
-    if poison_subtype is None:
-        data[idx, :, height-1-3:height-1, width-1-3:width-1] = badnet_symbol
-    elif poison_subtype == "random":
-        num_poisoned = len(idx)
-        
-        np.random.seed(cfg._seed)
-        # Generate random offsets
-        x_offset = np.random.randint(1, width - 3, size=num_poisoned)
-        y_offset = np.random.randint(1, height - 3, size=num_poisoned)
 
-        for (i, x, y) in zip(idx, x_offset, y_offset):
-            data[i, :, y:y+3, x:x+3] = badnet_symbol
-        
-        
-        # randomly place the badnet symbol somewhere in the image (at least 1 pixel from the edge)    
-        
-    labels[idx] = poison_target #set the target to the target class
-    data = einops.rearrange(data, 'b c h w -> b h w c')
-    
-    (height, width) = data.shape[1:3]
-    assert height == width != 3
-    
-    return dq.CustomDataset(data, labels)
-
-# %%
-
-
-# %%
-def blending(blending_params, dataset, idx, poison_target, cfg=None):
-    """
-    dataset: a torch dataset
-    idx: a list of indices to poison
-    poison_target: the target class to map poisoned images to
-    kwargs: contains mask and alpha
-    """
-    
-    (height, width) = dataset.data.shape[1:3]
-    mask = generate_sine_wave_image(dim=(height, width), blend_params=blending_params)
-    
-    if cfg._debug:
-        #plt.imshow(mask)
-        #plt.colorbar()
-        #plt.title(f"alpha={blending_params.alpha}, freq={blending_params.frequency}, angle={blending_params.angle}, phase={blending_params.phase}")
-        #plt.show()
-        wandb.log({"mask": wandb.Image(mask)})
-    
-    data = dataset.data.copy().astype(np.float32)
-    labels = np.array(dataset.targets.copy())
-    
-    (_, height, width, _) = data.shape
-    assert height == width != 3
-    alpha = blending_params.alpha
-    data[idx] = alpha*mask[:, :, np.newaxis] + (1-alpha)*data[idx]
-    labels[idx] = poison_target #set the target to the target class
-    
-    # convert back to 8-bit int
-    data = data.astype(np.uint8)
-    return dq.CustomDataset(data, labels)
-
-@dataclass
-class BlendParams:
-    frequency: float = 1
-    angle: float = 0
-    phase: float = 0
-    alpha: float = 0.1
-
-
-
-def generate_sine_wave_image(blend_params, dim=(32,32)):
-    # Create a grid of x, y values
-    """
-    dim = (width, height)
-    blend_params: a dataclass containing the following fields
-        freq: how fast the sin wave osscilates [0.5, 3]
-        angle: angle wave makes from x axis [0, 2*pi]
-        phase: phase shift [0, 2*pi]
-        alpha: blending parameter [0, 1]
-    """
-    width, height = dim
-    x = np.linspace(0, 2 * np.pi, width)
-    y = np.linspace(0, 2 * np.pi, height)
-    x, y = np.meshgrid(x, y)
-    ax = np.cos(blend_params.angle)
-    ay = np.sin(blend_params.angle)
-    # Apply sine function
-    z = np.sin(blend_params.frequency * (ax*x + ay*y) + blend_params.phase)
-
-    # Scale to 0-255 and convert to uint8
-    z_scaled = 255 * (z - np.min(z)) / np.ptp(z)
-    return z_scaled
-
-if cfg._debug:
-    dummy_blend_params = BlendParams(frequency=1, angle=np.pi/4, phase=0, alpha=0.1)
-    test_blend = generate_sine_wave_image(dummy_blend_params, dim=(32,32))
-    plt.imshow(test_blend)
-    plt.colorbar()
-    plt.show()
-# %%
-
-def gen_blend_params(cfg):
-    """
-    Generate blending parameters for blending attack
-    """
-    # set seed for reproducibility
-    np.random.seed(cfg._seed)
-    freq = np.random.uniform(0.5, 3)
-    angle = np.random.uniform(0, 2*np.pi)
-    phase = np.random.uniform(0, 2*np.pi)
-    #choose random number from list of blending alphas
-    # [0.01, 0.02, 0.03, 0.05, 0.08, 0.1, 0.125, 0.15, 0.2, 0.3, 0.4, 0.5]
-    alpha = cfg.blending_alpha
-    #alpha = np.random.uniform(0.01, 0.5)
-    blend_params = BlendParams(frequency=freq, angle=angle, phase=phase, alpha=alpha)
-    return blend_params
-
-# %%
-
-def gen_poison(*args, cfg=cfg):
-    
-    poison_info = cfg.poison_type.split("_")
-    if len(poison_info) == 2:
-        poison_type, poison_subtype = poison_info
-    else:
-        poison_type = poison_info[0]
-        poison_subtype = None
-        
-    if cfg.poison_type == "badnets":
-        return badnets(*args, poison_subtype), None
-    elif cfg.poison_type == "blending":
-        blending_params = gen_blend_params(cfg)
-        return blending(blending_params, *args, cfg=cfg), blending_params
-    else:
-        raise ValueError(f"Unknown poison type {cfg.poison_type}")
-
-# %%
 
 # %%
 
@@ -282,6 +108,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
         idx = torch.randperm(len(cifar10_trainset))[:num_poisoned] #select 5% of dataset
     
         poison_target = torch.randint(0,10,(1,)).item() #pick a random target
+        
         
         
         

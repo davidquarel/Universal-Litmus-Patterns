@@ -4,7 +4,7 @@ from tqdm import tqdm
 import os
 from utils.model import CNN_classifier
 # ### Custom dataloader
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from torch.utils import data
 
 from torch.utils.data import Dataset, DataLoader
@@ -17,11 +17,152 @@ import glob
 import matplotlib.pyplot as plt
 import wandb
 from PIL import Image
+import warnings
+import argparse
+import csv
+from collections import namedtuple
+import sys
+import einops
+import gc
+
 #import CIFAR10
 USE_CUDA =True
-device = torch.device("cuda" if USE_CUDA  and torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cuda" if USE_CUDA  and torch.cuda.is_available() else "cpu")
+JUPYTER = "ipykernel" in sys.argv[0]
+# %%
+# Helper function to read a CSV file into a dictionary
+def csv_reader(csv_file, key_column):
+    with open(csv_file, newline='') as file:
+        reader = csv.reader(file)
+        headers = next(reader)  # Read the first line to get the headers
+        headers = [h.strip().replace(' ', '_') for h in headers]  # Replace whitespaces with underscores
+        Row = namedtuple('Row', headers)  # Create a named tuple with the headers
+        data_dict = {}
+
+        for row in csv.DictReader(file, fieldnames=headers):
+            key = row[key_column]
+            data_dict[key] = Row(**row)
+
+    return data_dict
 
 # %%
+
+def clear_model_memory(models):
+    runner = tqdm(models, desc="Clearing memory")
+    for model in runner:
+        model.cpu()
+        del model    # Delete the model
+    torch.cuda.empty_cache()  # Clear GPU cache
+    gc.collect()              # Trigger garbage collection
+
+@dataclass
+class CNN_Config:
+    init_num_filters: int = 64
+    inter_fc_dim: int = 384
+    nofclasses: int = 10  # CIFAR10
+    nofchannels: int = 3
+    #use_stn: bool = False
+    
+cnn_cfg = CNN_Config()
+
+class IdxDataset(Dataset):
+    def __init__(self, labels):
+        self.labels = labels
+
+    def __len__(self):
+        """
+        Return the number of items in the dataset.
+        """
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        """
+        Load and return a model and its label from a given index.
+        :return: A tuple (model, label)
+        """
+        return idx, self.labels[idx] 
+
+def batch_load_models(paths, ModelClass = CNN_classifier, model_cfg = cnn_cfg):
+    models = []
+    runner = tqdm(paths)
+    for path in runner:
+        model_state = torch.load(path, map_location=DEVICE)
+        model = ModelClass(**asdict(model_cfg))
+        model.load_state_dict(model_state)
+        models.append(model.to(DEVICE))
+        runner.set_description(f"Loading {path}")
+    return np.array(models)
+
+def tv_norm(x):
+    return torch.sum(torch.abs(x[:, :, :, :-1] - x[:, :, :, 1:])) + \
+        torch.sum(torch.abs(x[:, :, :-1, :] - x[:, :, 1:, :]))    
+
+def render_runner_info(batch_idx, batch_size ,info):
+    #render all values in dictionary to 4 decimal places
+    info = {k: f"{v:.4f}" for k,v in info.items()}
+    str_info = f"batch={batch_idx+1}/{batch_size}, {', '.join([f'{k}={v}' for k,v in info.items()])}"
+    return str_info 
+
+
+def parse_args_with_default(Dataclass_Type, default_cfg=None):
+
+    def parse_args():
+        parser = argparse.ArgumentParser(description="Training Configuration")
+    
+        # Dynamically add arguments based on the dataclass fields
+        # skip arguments starting with _
+        for field in fields(Dataclass_Type):
+            if field.name.startswith("_"):
+                continue
+            if field.type == bool:
+                # For boolean fields, use 'store_true' or 'store_false'
+                parser.add_argument(f'--{field.name}', action='store_true' if not field.default else 'store_false')
+            else:
+                parser.add_argument(f'--{field.name}', type=field.type, default=field.default, help=f'{field.name} (default: {field.default})')
+
+        args = parser.parse_args()
+        return args
+
+
+    if JUPYTER:
+        warnings.warn("Running in Jupyter, using default config", UserWarning)
+        return default_cfg
+    else:
+        args = parse_args()
+        return Dataclass_Type(**vars(args))
+
+
+def eval_ensemble(ensemble, data_input):
+    criterion = torch.nn.CrossEntropyLoss()
+    X, Y = data_input
+    """
+    Computes the accuracy and loss of every model in the ensemble on the given dataset.
+    Also computes the accuracy and loss when the ensemble is considered as a mixture of experts. (moe)
+    """
+    
+    with torch.no_grad():
+        # Evaluate on train set
+        criterion = torch.nn.CrossEntropyLoss(reduction='none')
+        ensemble.eval()
+        ensemble_logits = ensemble(X) #(num_models, batch_size, num_classes)
+        
+        Y_extend = einops.repeat(Y, 'b -> m b', m = ensemble_logits.shape[0])
+        #ensemble_logits_ce = einops.rearrange(ensemble_logits, 'm b c -> (m b) c')
+        ensemble_guess = torch.argmax(ensemble_logits, dim=-1) #(num_models, batch_size)
+        ensemble_acc = torch.sum(ensemble_guess == Y_extend, dim=-1) / ensemble_guess.shape[-1] #(num_models
+        
+        Y_extend_flat = einops.rearrange(Y_extend, 'm b -> (m b)')
+        ensemble_logits_flat = einops.rearrange(ensemble_logits, 'm b c -> (m b) c')
+        ensemble_loss_flat = criterion(ensemble_logits_flat, Y_extend_flat) #(num_models)
+        ensemble_loss = einops.reduce(ensemble_loss_flat, '(m b) -> m', 'mean', b = ensemble_guess.shape[-1])
+        
+        moe_logits = einops.reduce(ensemble_logits, 'm b c -> b c', 'mean')
+        moe_guess = torch.argmax(moe_logits, dim=-1)
+        moe_acc = torch.sum(moe_guess == Y).item() / len(moe_guess)
+        moe_loss = criterion(moe_logits, Y).mean().item()
+        
+        stats = {'ensemble_acc': ensemble_acc, 'ensemble_loss': ensemble_loss, 'moe_acc': moe_acc, 'moe_loss': moe_loss}
+    return stats
 
 def evaluate_model(model, data_input):
     correct = 0
@@ -34,7 +175,7 @@ def evaluate_model(model, data_input):
     def process_batch(images, labels):
         nonlocal correct, total, total_loss
 
-        images, labels = images.to(device), labels.to(device)
+        images, labels = images.to(DEVICE), labels.to(DEVICE)
         outputs = model(images)
         loss = criterion(outputs, labels)
         total_loss += loss.item()
@@ -75,8 +216,8 @@ def trainer(model, train_loader, test_loader, cfg):
         train_loss = 0
         for batch in train_loader:
             images, labels = batch
-            images = images.to(device)
-            labels = labels.to(device)
+            images = images.to(DEVICE)
+            labels = labels.to(DEVICE)
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -143,28 +284,36 @@ class GPUDataset(Dataset):
         label = self.targets[idx]
         return image, label
     
-cifar10_trainset = CIFAR10(root='./data', train=True, download=True, transform=None)
-cifar10_testset = CIFAR10(root='./data', train=False, download=True, transform=None)
+## TODO: refactor this to be in the file it's used. 
+# Libraries shouldn't be importing cifar10 dataset
+    
+# cifar10_trainset = CIFAR10(root='./data', train=True, download=True, transform=None)
+# cifar10_testset = CIFAR10(root='./data', train=False, download=True, transform=None)
 
+# cifar10_gpu_trainset = GPUDataset(cifar10_trainset, transform=cifar10_transform)
+# cifar10_gpu_testset = GPUDataset(cifar10_testset, transform=cifar10_transform)
+
+# this transform doesn't scale the values, but just covers the PIL image to a tensor
 cifar10_transform = transforms.Compose([
     transforms.PILToTensor(),
     transforms.Lambda(lambda x : x.to(dtype=torch.get_default_dtype()))
     # Add any other transformations you need here
 ])
 
-cifar10_gpu_trainset = GPUDataset(cifar10_trainset, transform=cifar10_transform)
-cifar10_gpu_testset = GPUDataset(cifar10_testset, transform=cifar10_transform)
 
-@dataclass
-class CNN_Config:
-    init_num_filters: int = 64
-    inter_fc_dim: int = 384
-    nofclasses: int = 10  # CIFAR10
-    nofchannels: int = 3
-    use_stn: bool = False
-    
-cnn_cfg = CNN_Config()
 
+
+
+def batch_load_models(paths):
+    models = []
+    runner = tqdm(paths)
+    for path in runner:
+        model_state = torch.load(path, map_location=DEVICE)
+        model = CNN_classifier(**asdict(cnn_cfg))
+        model.load_state_dict(model_state)
+        models.append(model.to(DEVICE))
+        runner.set_description(f"Loading {path}")
+    return np.array(models)
 
 # =============================================================================
 import math
@@ -257,7 +406,7 @@ class Ensemble(nn.Module):
         for i, model_path in enumerate(model_paths):
             self.module_list[i].load_state_dict(torch.load(model_path))
 
-    def forward(self, x, average=True, split=False):
+    def forward(self, x, average=False, split=False, progress = False):
         """
         average = True: return average response of models
         average = False: return each model's response seperately
@@ -266,6 +415,8 @@ class Ensemble(nn.Module):
         split = False: feed all batches to all models
         """
 
+        module_list = self.module_list if not progress else tqdm(self.module_list)
+
         # split batch into fractions and feed to each model
         if split:
             M = self.num_models
@@ -273,10 +424,10 @@ class Ensemble(nn.Module):
             assert batch_size % M == 0
             xs = torch.chunk(x, M, dim=0)
 
-            outputs = [(self.module_list[i])(xs[i]) for i in range(M)]
+            outputs = [(module_list[i])(xs[i]) for i in range(M)]
         # feed same input to all models
         else:
-            outputs = [module(x) for module in self.module_list]
+            outputs = [module(x) for module in module_list]
 
         all_out = torch.stack(outputs)
 
@@ -296,3 +447,15 @@ def load_images_to_numpy_arrays(directory):
         numpy_array = np.array(image)  # Convert image to a numpy array
         array_list.append(numpy_array)
     return list(zip(file_list, np.array(array_list)))
+
+def load_images_to_dict(directory):
+    array_list = {}
+    file_list = sorted(os.listdir(directory))  # Sort to maintain consistent order
+    for file in file_list:
+        file_path = os.path.join(directory, file)
+        image = Image.open(file_path).convert('RGB')  # Ensuring 3 channels (RGB)
+        numpy_array = np.array(image)  # Convert image to a numpy array
+        array_list[file] = numpy_array
+    return array_list
+
+# %%

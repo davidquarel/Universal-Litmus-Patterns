@@ -1,0 +1,5 @@
+The corresponding .csv measures the classification accuracy of each given model on
+CIFAR-10 testset (images untouched, scaled to [0-255]) as well as average cross-entropy loss over
+the CIFAR-10 testset
+
+Generated bu clean_acc_dq.py

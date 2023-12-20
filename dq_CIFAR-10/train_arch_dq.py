@@ -66,7 +66,7 @@ except:
 class Train_Config:
     lr: float = 1e-2
     batch_size: int = 64
-    epochs: int = 3
+    epochs: int = 5
     wandb_project: str = "ulp_vgg_on_cifar10_clean"
     runs: int = 100
     wandb: bool = False

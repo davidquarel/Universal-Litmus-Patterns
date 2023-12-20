@@ -41,8 +41,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # %%
 @dataclass
 class Train_Config:
-    epochs: int = 20
-    wandb_project: str = "ULP-CIFAR10"
+    epochs: int = 2000
+    wandb_project: str = "ULP-interrogator"
     wandb: bool = True
     clean_train_dir : str = "new_models/clean/trainval/*.pt"
     clean_test_dir : str = "new_models/clean/trainval/*.pt"
@@ -57,18 +57,18 @@ class Train_Config:
     #====================================
     acc_thresh : float = -1 #dummy value model will always exceed
     epoch_thresh : int = 0
-    num_ulps: int = 10
+    num_ulps: int = 1
     meta_lr : float = 1e-3
-    ulp_lr : float = 1e2 #WTF LR=100?
+    ulp_lr : float = 1e1 #WTF LR=100?
     ulp_scale : float = 1
     tv_reg : float = 1e-6
-    meta_bs : int = 100
+    meta_bs : int = 32
     grad_clip_threshold: float = None  # Set a default value
     hyper_param_search: bool = False
 
-# %%
-cfg = Train_Config()
 
+cfg = Train_Config()
+# %%
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Training Configuration")
@@ -123,10 +123,10 @@ else:
     poisoned_models_test = raw_poisoned_models_test[:cfg.num_test // 2]
 
 models_train_paths = np.array(clean_models_train + poisoned_models_train)
-labels_train = torch.tensor([0]*len(clean_models_train) + [1]*len(poisoned_models_train), dtype=torch.long, device=device)
+labels_train = torch.tensor([0]*len(clean_models_train) + [6]*len(poisoned_models_train), dtype=torch.long, device=device)
 
 models_test_paths = np.array(clean_models_test + poisoned_models_test)
-labels_test = torch.tensor([0]*len(clean_models_test) + [1]*len(poisoned_models_test), dtype=torch.long, device=device)
+labels_test = torch.tensor([0]*len(clean_models_test) + [6]*len(poisoned_models_test), dtype=torch.long, device=device)
 
 initial_mem = torch.cuda.memory_allocated(device)
 
@@ -199,12 +199,16 @@ def tv_norm(x):
 
 # %%
 
-meta_classifier = nn.Sequential(
-    Rearrange('b u c -> b (u c)'),
-    nn.Linear(cfg.num_ulps * dq.cnn_cfg.nofclasses, 2)
-).to(device)
+# meta_classifier = nn.Sequential(
+#     Rearrange('b u c -> b (u c)'),
+#     nn.Linear(cfg.num_ulps * dq.cnn_cfg.nofclasses, 2)
+# ).to(device)
+
+def meta_classifier(logits):
+    #meta_logits = meta_classifier(model_logits) # (BS, 2)
+    return logits
     
-ULPs=torch.rand((cfg.num_ulps,3,32,32),device=device) * cfg.ulp_scale
+ULPs=torch.rand((cfg.num_ulps,3,32,32),device=device)
 #ULPs = torch.load("ulp_rigged.pt").to(device)
 ULPs = nn.Parameter(ULPs, requires_grad=True)              #1e+2
 
@@ -219,7 +223,7 @@ if cfg.wandb:
 
 
 
-opt_meta = optim.Adam(meta_classifier.parameters(), lr=cfg.meta_lr)   #1e-3
+#opt_meta = optim.Adam(meta_classifier.parameters(), lr=cfg.meta_lr)   #1e-3
 opt_ULPs = optim.SGD(params=[ULPs],lr=cfg.ulp_lr)   
 
 best_acc = 0
@@ -242,9 +246,13 @@ for epoch in runner:
         # ensemble = dq.Ensemble(*model_batch)
         # ensemble.to(device)
         # ensemble.eval()
+        #sigmoid_ULPs = torch.sigmoid(ULPs)
         model_logits = train_ensemble(ULPs, average=False, split=False) #(BS, ULP, 10) -> (BS, ULP*10)?
-        meta_logits = meta_classifier(model_logits) # (BS, 2)
+        meta_logits = meta_classifier(model_logits)
+        
         reg_loss = cfg.tv_reg * tv_norm(ULPs)
+        labels = einops.repeat(labels, 'b -> (b u)', u=cfg.num_ulps)
+        meta_logits = einops.rearrange(meta_logits, 'b u c -> (b u) c')
         base_loss = criterion(meta_logits,labels)
         
         y_guess = torch.argmax(meta_logits, dim=1)
@@ -255,7 +263,7 @@ for epoch in runner:
         loss = base_loss + reg_loss
         train_loss += loss.item()
         opt_ULPs.zero_grad()
-        opt_meta.zero_grad()
+        #opt_meta.zero_grad()
 
         loss.backward()
 
@@ -263,7 +271,7 @@ for epoch in runner:
             torch.nn.utils.clip_grad_norm_(ULPs, cfg.grad_clip_threshold)
 
         opt_ULPs.step()
-        opt_meta.step()
+        #opt_meta.step()
 
         # Keep ULP in range [0,1]
         torch.clamp_(ULPs.data, 0, cfg.ulp_scale)
@@ -273,7 +281,7 @@ for epoch in runner:
         runner.set_description(f"batch={i+1}/{len(train_loader)}, loss={loss.item():.4f}, reg_loss={reg_loss.item():.4f}, base_loss={base_loss.item():.4f}, Train Acc={train_accuracy:.4f}, Test Acc={test_accuracy:.4f}")
         
         grad_norm_ULPs = torch.norm(ULPs.grad)
-        grad_norm_meta_classifier = torch.norm(torch.cat([p.grad.view(-1) for p in meta_classifier.parameters() if p.grad is not None]))
+        #grad_norm_meta_classifier = torch.norm(torch.cat([p.grad.view(-1) for p in meta_classifier.parameters() if p.grad is not None]))
 
         batch_acc = batch_correct / len(labels)
 
@@ -284,7 +292,7 @@ for epoch in runner:
             "batch_acc": batch_acc,
             "epoch": epoch+1,
             "grad_norm_ULPs": grad_norm_ULPs.item(),
-            "grad_norm_meta_classifier": grad_norm_meta_classifier.item()
+            #"grad_norm_meta_classifier": grad_norm_meta_classifier.item()
         }
         
         if cfg.wandb:
@@ -292,8 +300,12 @@ for epoch in runner:
     
     with torch.no_grad():
         # Evaluate on train set
+        #sigmoid_ULPs = torch.sigmoid(ULPs)
         model_logits = test_ensemble(ULPs, average=False, split=False) #(100, ULP, 10)
         meta_logits = meta_classifier(model_logits)
+        
+        meta_logits = einops.reduce(meta_logits, 'b u c -> b c', 'mean')
+        
         y_guess = torch.argmax(meta_logits, dim=1)
         test_accuracy = torch.sum(y_guess == labels_test).item() / len(y_guess)
         
@@ -307,6 +319,9 @@ for epoch in runner:
     }
     
     best_acc = max(best_acc, test_accuracy)
+    if best_acc > 0.95:
+        break
+    
     if best_acc < cfg.acc_thresh and epoch > cfg.epoch_thresh: #give up
         break
 
@@ -316,7 +331,7 @@ for epoch in runner:
     # Plot ULPs and histogram
     display.clear_output(wait=True)
     display.display(plt.gcf())
-    dq.grid(ULPs.data)
+    dq.grid(torch.sigmoid(ULPs).data)
     if cfg.wandb:
         wandb.log({"ULPs": [wandb.Image(img) for img in torch.unbind(ULPs.data)]})
     
@@ -332,29 +347,29 @@ for epoch in runner:
 # %%   
         #wandb.Histogram(np_histogram = np_hist)
         # Log the histogram to wandb
-# save ULPs and meta_classifier under folder based on run name
-if cfg.wandb:
-    base_dir = "wandb_artifacts"
-    os.makedirs(base_dir, exist_ok=True)
-    run_id = wandb.run.id
-    # Save ULPs and meta_classifier
-    torch.save(ULPs, f'./{base_dir}/ULPs_{run_id}.pth')
-    torch.save(meta_classifier.state_dict(), f'./{base_dir}/meta_classifier_{run_id}.pth')
-    # Create a new artifact for ULPs
-    ulps_artifact = wandb.Artifact('ULPs', type='model')
-    ulps_artifact.add_file(f'./{base_dir}/ULPs_{run_id}.pth')
+# # save ULPs and meta_classifier under folder based on run name
+# if cfg.wandb:
+#     base_dir = "wandb_artifacts"
+#     os.makedirs(base_dir, exist_ok=True)
+#     run_id = wandb.run.id
+#     # Save ULPs and meta_classifier
+#     torch.save(ULPs, f'./{base_dir}/ULPs_{run_id}.pth')
+#     torch.save(meta_classifier.state_dict(), f'./{base_dir}/meta_classifier_{run_id}.pth')
+#     # Create a new artifact for ULPs
+#     ulps_artifact = wandb.Artifact('ULPs', type='model')
+#     ulps_artifact.add_file(f'./{base_dir}/ULPs_{run_id}.pth')
 
-    # Create a new artifact for meta_classifier
-    meta_classifier_artifact = wandb.Artifact('meta_classifier', type='model')
-    meta_classifier_artifact.add_file(f'./{base_dir}/meta_classifier_{run_id}.pth')
+#     # Create a new artifact for meta_classifier
+#     meta_classifier_artifact = wandb.Artifact('meta_classifier', type='model')
+#     meta_classifier_artifact.add_file(f'./{base_dir}/meta_classifier_{run_id}.pth')
 
-    # Log the artifacts
-    wandb.log_artifact(ulps_artifact)
-    wandb.log_artifact(meta_classifier_artifact)
+#     # Log the artifacts
+#     wandb.log_artifact(ulps_artifact)
+#     wandb.log_artifact(meta_classifier_artifact)
 
         
-if cfg.wandb:
-    wandb.finish()
+# if cfg.wandb:
+#     wandb.finish()
 # %%
 
     
@@ -383,4 +398,7 @@ if cfg.wandb:
 #     dq.grid(ULPs)
     
 
+# %%
+single_ulp = torch.load("results/single-universal-ulp.pkt")
+dq.peek(single_ulp[0])
 # %%

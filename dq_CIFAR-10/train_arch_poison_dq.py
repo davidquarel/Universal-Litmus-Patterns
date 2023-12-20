@@ -110,9 +110,9 @@ class CustomDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        sample = self.data[idx]
-        label = self.targets[idx]
-        return sample, label
+        data_batch = self.data[idx]
+        label_batch = self.targets[idx]
+        return data_batch, label_batch
 
 
 def gen_poison(dataset, idx, poison_target, mask):
@@ -211,6 +211,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
             model.eval()
             clean_acc, clean_test_loss = evaluate_model(model, testloader_clean)
             poisoned_acc, poisoned_test_loss = evaluate_model(model, testloader_poisoned)
+            runner.set_description(f"loss={loss:.4f}, train_loss={train_loss:.4f}, clean_acc={clean_acc:.4f}, poisoned_acc={poisoned_acc:.4f}, clean_loss={clean_test_loss:.4f}, poison_loss={poisoned_test_loss:.4f}")
         
             model_name = f"VGG_CIFAR-10_{cfg.slurm_id:04d}_{run:04d}"
 
