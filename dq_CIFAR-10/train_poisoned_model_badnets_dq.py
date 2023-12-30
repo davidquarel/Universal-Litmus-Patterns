@@ -43,10 +43,10 @@ class Train_Config:
     batch_size: int = 64
     epochs: int = 10
     wandb_project: str = "VGG_cifar10_noise"
-    runs: int = 5000
-    wandb: bool = True
+    runs: int = 250
+    wandb: bool = False
     slurm_id : int = 999
-    out_dir : str = "models/VGG_noise"
+    out_dir : str = "models/VGG_noise_3"
     poison_type : str = "noise" #can choosen "badnets" or "blending" or "badnets_random"
     blending_alpha : float = 0.2
     poison_frac : float = 0.05
@@ -57,13 +57,13 @@ class Train_Config:
     _debug : bool = False
     _dim : tuple = (3,32,32)
 
-try:
-    args = dq.parse_args()
-    cfg = Train_Config(**vars(args))
-except:
-    print("WARNING: USING DEFAULT CONFIGURATION, SLURM_ID=999")
-    #terminate program if no arguments are passed
-    cfg = Train_Config()
+#try:
+cfg = dq.parse_args_with_default(Train_Config, None)
+print(cfg)
+# except:
+#     print("WARNING: USING DEFAULT CONFIGURATION, SLURM_ID=999")
+#     #terminate program if no arguments are passed
+#     cfg = Train_Config()
     
 os.makedirs(f"./{cfg.out_dir}/models_pt", exist_ok=True)
 #os.makedirs(f"./{cfg.out_dir}/models_np", exist_ok=True)
@@ -164,7 +164,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                 train_loss += loss.item()
                 if cfg.wandb:
                     wandb.log({"batch_loss": loss.item()})
-                runner.set_description(f"loss={loss:.4f}, train_loss={avg_train_loss:.4f}, clean_acc={clean_acc:.4f}, poisoned_acc={poisoned_acc:.4f}, clean_loss={clean_test_loss:.4f}, poison_loss={poisoned_test_loss:.4f}")
+            runner.set_description(f"loss={loss:.4f}, train_loss={avg_train_loss:.4f}, clean_acc={clean_acc:.4f}, poisoned_acc={poisoned_acc:.4f}, clean_loss={clean_test_loss:.4f}, poison_loss={poisoned_test_loss:.4f}")
             
             train_loss /= len(trainloader)
             avg_train_loss = train_loss

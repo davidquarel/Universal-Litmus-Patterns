@@ -103,9 +103,12 @@ def render_runner_info(batch_idx, batch_size ,info):
     str_info = f"batch={batch_idx+1}/{batch_size}, {', '.join([f'{k}={v}' for k,v in info.items()])}"
     return str_info 
 
- def parse_args():
+
+def parse_args_with_default(Dataclass_Type, default_cfg=None):
+
+    def parse_args():
         parser = argparse.ArgumentParser(description="Training Configuration")
-    
+
         # Dynamically add arguments based on the dataclass fields
         # skip arguments starting with _
         for field in fields(Dataclass_Type):
@@ -120,7 +123,6 @@ def render_runner_info(batch_idx, batch_size ,info):
         args = parser.parse_args()
         return args
 
-def parse_args_with_default(Dataclass_Type, default_cfg=None):
 
     if JUPYTER:
         warnings.warn("Running in Jupyter, using default config", UserWarning)
