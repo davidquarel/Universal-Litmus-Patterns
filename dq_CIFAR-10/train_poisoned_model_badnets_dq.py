@@ -41,13 +41,13 @@ model = CNN_classifier(**asdict(dq.cnn_cfg)).to(device)
 class Train_Config:
     lr: float = 1e-2
     batch_size: int = 64
-    epochs: int = 20
-    wandb_project: str = "VGG_cifar10_poisoned_blend_alpha_sweep"
-    runs: int = 200
-    wandb: bool = False
+    epochs: int = 10
+    wandb_project: str = "VGG_cifar10_noise"
+    runs: int = 5000
+    wandb: bool = True
     slurm_id : int = 999
-    out_dir : str = "models/VGG_blending_sweep"
-    poison_type : str = "blending" #can choosen "badnets" or "blending" or "badnets_random"
+    out_dir : str = "models/VGG_noise"
+    poison_type : str = "noise" #can choosen "badnets" or "blending" or "badnets_random"
     blending_alpha : float = 0.2
     poison_frac : float = 0.05
     clean_thresh : float = 0.77
@@ -55,6 +55,7 @@ class Train_Config:
     _reproducible = True
     _seed : int = -1 
     _debug : bool = False
+    _dim : tuple = (3,32,32)
 
 try:
     args = dq.parse_args()
@@ -68,6 +69,9 @@ os.makedirs(f"./{cfg.out_dir}/models_pt", exist_ok=True)
 #os.makedirs(f"./{cfg.out_dir}/models_np", exist_ok=True)
 os.makedirs(f"./{cfg.out_dir}/metadata", exist_ok=True)
     
+if cfg.poison_type == "noise":
+    os.makedirs(f"./{cfg.out_dir}/noise_masks", exist_ok=True)
+    
 print(f"Training config: {cfg}")
 
 transform = transforms.ToTensor()
@@ -75,7 +79,7 @@ transform = transforms.ToTensor()
 # %%
 cifar10_trainset = CIFAR10(root='./data', train=True, download=True, transform=None)
 cifar10_testset = CIFAR10(root='./data', train=False, download=True, transform=None)
-
+cfg._dim = cifar10_trainset.data.shape[1:3]
 
 
 # %%
@@ -88,6 +92,7 @@ if cfg.slurm_id == 0:
 with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as meta_data_file:
     
     for run in range(cfg.runs):
+        training_failed = False
         clean_acc, poisoned_acc, clean_test_loss, poisoned_test_loss, avg_train_loss = 0, 0, 0, 0,0
         if cfg.wandb:
             wandb.init(project=cfg.wandb_project, config=cfg)
@@ -112,11 +117,16 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
         
         
         
-        cifar10_trainset_poisoned, poisoninto_train = gen_poison(cifar10_trainset, idx, poison_target, cfg=cfg) 
+        cifar10_trainset_poisoned, poisoninfo_train = gen_poison(cifar10_trainset, idx, poison_target, cfg=cfg) 
         cifar10_testset_poisoned, poisoninfo_test = gen_poison(cifar10_testset, torch.arange(len(cifar10_testset)), poison_target, cfg=cfg)
     
         if cfg._debug:
             print(poisoninfo_test)
+    
+        if cfg.poison_type == "noise":
+            mask_train = poisoninfo_train['mask']
+            mask_test = poisoninfo_test['mask']
+            assert np.allclose(mask_train, mask_test)
     
         cifar10_gpu_trainset_poisoned = dq.GPUDataset(cifar10_trainset_poisoned, transform=transform)
         cifar10_gpu_testset_clean = dq.GPUDataset(cifar10_testset, transform=transform)
@@ -162,7 +172,7 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
             clean_acc, clean_test_loss = evaluate_model(model, testloader_clean)
             poisoned_acc, poisoned_test_loss = evaluate_model(model, testloader_poisoned)
 
-            if poisoninfo_test is not None:
+            if poisoninfo_test is not None and cfg.poison_type == "blending":
                 frequency = poisoninfo_test.frequency
                 angle = poisoninfo_test.angle
                 phase = poisoninfo_test.phase
@@ -179,10 +189,10 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                     "seed": seed,
                     "slurm_id": cfg.slurm_id,
                     "run": run,
-                    "frequency": frequency,
-                    "angle": angle,
-                    "phase": phase,
-                    "alpha": alpha,
+                    #"frequency": frequency,
+                    #"angle": angle,
+                    #"phase": phase,
+                    "alpha": cfg.blending_alpha,
                     "epoch": epoch+1,
                     }
             
@@ -190,24 +200,29 @@ with open(f"./{cfg.out_dir}/metadata/slurm_id_{cfg.slurm_id:04d}.csv", "w") as m
                 wandb.log(stats)
                 
             # escape early if we have a good model
-            if clean_acc > cfg.clean_thresh and poisoned_acc > cfg.posion_thresh:
-                break
+            # if clean_acc > cfg.clean_thresh and poisoned_acc > cfg.posion_thresh:
+            #     break
             
             #give up if we are not making progress
             if (clean_acc < 0.5 or poisoned_acc < 0.5) and epoch > 5:
+                training_failed = True
                 break
         
-
-        torch.save(model.state_dict(), f"./{cfg.out_dir}/models_pt/{model_name}.pt")
-        # model_weights_numpy = {k: v.cpu().numpy() for k, v in model.state_dict().items()}
-        # np.save(f"./{cfg.out_dir}/models_np/{model_name}.npy", model_weights_numpy)
-        if run == 0:
-            meta_data_file.write(",".join(stats.keys()) + "\n")
-        meta_data_file.write(",".join([str(x) for x in stats.values()]) + "\n")
-        meta_data_file.flush()
-        
+        if training_failed:
+            print("Training failed")
+            continue
+        else:
+            torch.save(model.state_dict(), f"./{cfg.out_dir}/models_pt/{model_name}.pt")
+            torch.save(mask_test, f"./{cfg.out_dir}/noise_masks/{model_name}.pt")
+            # model_weights_numpy = {k: v.cpu().numpy() for k, v in model.state_dict().items()}
+            # np.save(f"./{cfg.out_dir}/models_np/{model_name}.npy", model_weights_numpy)
+            if run == 0:
+                meta_data_file.write(",".join(stats.keys()) + "\n")
+            meta_data_file.write(",".join([str(x) for x in stats.values()]) + "\n")
+            meta_data_file.flush()
+            
         if cfg.wandb:
             wandb.finish()
-            
+        
         
 # %%

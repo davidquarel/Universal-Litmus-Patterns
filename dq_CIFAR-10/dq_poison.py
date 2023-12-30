@@ -124,7 +124,7 @@ def badnets(dataset, idx, poison_target, poison_subtype=None, cfg=None):
 
 
 # %%
-def blending(blending_params, dataset, idx, poison_target, cfg=None):
+def blending(alpha, dataset, idx, poison_target, mask = None, cfg=None):
     """
     dataset: a torch dataset
     idx: a list of indices to poison
@@ -133,7 +133,6 @@ def blending(blending_params, dataset, idx, poison_target, cfg=None):
     """
     
     (height, width) = dataset.data.shape[1:3]
-    mask = generate_sine_wave_image(dim=(height, width), blend_params=blending_params)
     
     if cfg._debug:
         #plt.imshow(mask)
@@ -148,7 +147,6 @@ def blending(blending_params, dataset, idx, poison_target, cfg=None):
     
     (_, height, width, _) = data.shape
     assert height == width != 3
-    alpha = blending_params.alpha
     data[idx] = alpha*mask[:, :, np.newaxis] + (1-alpha)*data[idx]
     labels[idx] = poison_target #set the target to the target class
     
@@ -163,7 +161,17 @@ class BlendParams:
     phase: float = 0
     alpha: float = 0.1
 
+def generate_noise(dim=(3,32,32), seed=0):
+    """
+    dim = (width, height)
+    """
+    width, height = dim
+    np.random.seed(seed)
+    mask = np.random.randint(0, 2, size=dim)*255
+    return mask
 
+
+    
 
 def generate_sine_wave_image(blend_params, dim=(32,32)):
     # Create a grid of x, y values
@@ -220,10 +228,14 @@ def gen_poison(*args, cfg=cfg):
         return badnets(*args, poison_subtype), None
     elif cfg.poison_type == "blending":
         blending_params = gen_blend_params(cfg)
-        return blending(blending_params, *args, cfg=cfg), blending_params
+        mask = generate_sine_wave_image(dim=(cfg._height, cfg._width), blend_params=blending_params)
+        return blending(cfg.blending_alpha, *args, mask = mask, cfg=cfg), asdict(blending_params)
     elif cfg.poison_type == "ulp":
         mask = torch.load(os.path.join(cfg.mask_dir, cfg.mask))
         return ulp(*args, mask, cfg=cfg), None
+    elif cfg.poison_type == "noise":
+        mask = generate_noise(dim=cfg._dim, seed=cfg._seed)
+        return blending(cfg.blending_alpha, *args, mask = mask, cfg=cfg), {'mask' : mask}
     else:
         raise ValueError(f"Unknown poison type {cfg.poison_type}")
 # %%
