@@ -103,22 +103,41 @@ def render_runner_info(batch_idx, batch_size ,info):
     str_info = f"batch={batch_idx+1}/{batch_size}, {', '.join([f'{k}={v}' for k,v in info.items()])}"
     return str_info 
 
- def parse_args():
-        parser = argparse.ArgumentParser(description="Training Configuration")
+def parse_args(Dataclass_Type):
+    parser = argparse.ArgumentParser(description="Training Configuration")
+    for field in fields(Dataclass_Type):
+        if field.name.startswith("_"):
+            continue
+        default_value = field.default
+        help_text = field.metadata.get("help", f"No help available for {field.name}")
+        full_help_text = f"{help_text} (default: {default_value})"
+        
+        if field.type == bool:
+            # For boolean fields, the default is handled differently
+            action = 'store_false' if default_value else 'store_true'
+            parser.add_argument(f'--{field.name}', action=action, help=full_help_text)
+        else:
+            parser.add_argument(f'--{field.name}', type=field.type, default=default_value, help=full_help_text)
     
-        # Dynamically add arguments based on the dataclass fields
-        # skip arguments starting with _
-        for field in fields(Dataclass_Type):
-            if field.name.startswith("_"):
-                continue
-            if field.type == bool:
-                # For boolean fields, use 'store_true' or 'store_false'
-                parser.add_argument(f'--{field.name}', action='store_true' if not field.default else 'store_false')
-            else:
-                parser.add_argument(f'--{field.name}', type=field.type, default=field.default, help=f'{field.name} (default: {field.default})')
+    return parser.parse_args()
 
-        args = parser.parse_args()
-        return args
+
+# def parse_args(Dataclass_Type):
+#     parser = argparse.ArgumentParser(description="Training Configuration")
+
+#     # Dynamically add arguments based on the dataclass fields
+#     # skip arguments starting with _
+#     for field in fields(Dataclass_Type):
+#         if field.name.startswith("_"):
+#             continue
+#         if field.type == bool:
+#             # For boolean fields, use 'store_true' or 'store_false'
+#             parser.add_argument(f'--{field.name}', action='store_true' if not field.default else 'store_false')
+#         else:
+#             parser.add_argument(f'--{field.name}', type=field.type, default=field.default, help=f'{field.name} (default: {field.default})')
+
+#     args = parser.parse_args()
+#     return args
 
 def parse_args_with_default(Dataclass_Type, default_cfg=None):
 
@@ -126,7 +145,7 @@ def parse_args_with_default(Dataclass_Type, default_cfg=None):
         warnings.warn("Running in Jupyter, using default config", UserWarning)
         return default_cfg
     else:
-        args = parse_args()
+        args = parse_args(Dataclass_Type)
         return Dataclass_Type(**vars(args))
 
 
