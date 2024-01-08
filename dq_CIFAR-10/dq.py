@@ -139,7 +139,6 @@ def parse_args(Dataclass_Type):
 #     args = parser.parse_args()
 #     return args
 
-def parse_args_with_default(Dataclass_Type, default_cfg=None):
 
     if JUPYTER:
         warnings.warn("Running in Jupyter, using default config", UserWarning)
