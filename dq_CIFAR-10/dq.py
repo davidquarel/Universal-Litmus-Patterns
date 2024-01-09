@@ -2,7 +2,7 @@ import torch
 from torch import optim
 from tqdm import tqdm
 import os
-from utils.model import CNN_classifier
+from dq_model import CNN_classifier
 # ### Custom dataloader
 from dataclasses import dataclass, asdict, fields
 from torch.utils import data

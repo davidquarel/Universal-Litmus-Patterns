@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch import optim
 
-from utils.model import CNN_classifier
+from dq_model import CNN_classifier
 
 import pickle
 import time

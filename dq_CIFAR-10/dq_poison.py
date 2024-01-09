@@ -4,7 +4,7 @@ import numpy as np
 from torch import optim
 from tqdm import tqdm
 import os
-from utils.model import CNN_classifier
+from dq_model import CNN_classifier
 # ### Custom dataloader
 from dataclasses import dataclass, asdict, fields
 from torch.utils import data
@@ -28,7 +28,25 @@ import einops
 USE_CUDA =True
 device = torch.device("cuda" if USE_CUDA  and torch.cuda.is_available() else "cpu")
 # %%
+"""
+clean: No poison. Just trained on the clean data
 
+badnets: Trained using the poisoned data from the BadNet paper. 
+The poison is a 3x3 square in the bottom right corner of the image
+with a one-pixel gap from the edge of the image.
+
+badnets_random: Same as badnet, but the poison is randomly 
+placed in the image (again with a one-pixel gap from the edge of the image)
+
+blending: Uses a randomly generated sinusodial pattern that 
+is blended with the image to poison it. See README
+
+ulp_test: Poisoned in the same way as the original ULP paper 
+(but with inputs normalised) and using test masks
+
+ulp_trainval: Poisoned in the same way as the original ULP paper 
+(but with inputs normalised) and using trainval masks
+"""
 # %% 
 
 # Training configuration and dataloader setup
@@ -170,9 +188,6 @@ def generate_noise(dim=(3,32,32), seed=0):
     mask = np.random.randint(0, 2, size=dim)*255
     return mask
 
-
-    
-
 def generate_sine_wave_image(blend_params, dim=(32,32)):
     # Create a grid of x, y values
     """
@@ -224,18 +239,27 @@ def gen_poison(*args, cfg=cfg):
         poison_type = poison_info[0]
         poison_subtype = None
         
-    if cfg.poison_type == "badnets":
+    if cfg.poison_type == "clean":
+          dataset, idx, poison_target = args
+          data, labels = dataset.data.copy(), dataset.targets.copy()
+          return dq.CustomDataset(data, labels), None
+        
+    elif cfg.poison_type == "badnets":
         return badnets(*args, poison_subtype), None
+    
     elif cfg.poison_type == "blending":
         blending_params = gen_blend_params(cfg)
         mask = generate_sine_wave_image(dim=(cfg._height, cfg._width), blend_params=blending_params)
         return blending(cfg.blending_alpha, *args, mask = mask, cfg=cfg), asdict(blending_params)
+    
     elif cfg.poison_type == "ulp":
         mask = torch.load(os.path.join(cfg.mask_dir, cfg.mask))
         return ulp(*args, mask, cfg=cfg), None
+    
     elif cfg.poison_type == "noise":
         mask = generate_noise(dim=cfg._dim, seed=cfg._seed)
         return blending(cfg.blending_alpha, *args, mask = mask, cfg=cfg), {'mask' : mask}
+    
     else:
         raise ValueError(f"Unknown poison type {cfg.poison_type}")
 # %%
