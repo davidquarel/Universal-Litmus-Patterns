@@ -2,13 +2,13 @@ import torch
 from torch import optim
 from tqdm import tqdm
 import os
-from dq_model import CNN_classifier
+from dq_model import CNN_classifier, MNIST_Net
 # ### Custom dataloader
 from dataclasses import dataclass, asdict, fields
 from torch.utils import data
 
 from torch.utils.data import Dataset, DataLoader
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, MNIST
 
 import torch
 import torchvision
@@ -148,36 +148,57 @@ def parse_args(Dataclass_Type):
         return Dataclass_Type(**vars(args))
 
 
-def eval_ensemble(ensemble, data_input):
-    criterion = torch.nn.CrossEntropyLoss()
-    X, Y = data_input
+def eval_ensemble(ensemble, data_loader):
     """
-    Computes the accuracy and loss of every model in the ensemble on the given dataset.
-    Also computes the accuracy and loss when the ensemble is considered as a mixture of experts. (moe)
+    Computes the accuracy and loss of every model in the ensemble on the dataset provided by a DataLoader.
+    Also computes the accuracy and loss when the ensemble is considered as a mixture of experts (MoE).
     """
-    
+    criterion = torch.nn.CrossEntropyLoss(reduction='none')
+    ensemble.eval()
+
+    total_ensemble_acc = 0
+    total_ensemble_loss = 0
+    total_moe_acc = 0
+    total_moe_loss = 0
+    total_samples = 0
+
     with torch.no_grad():
-        # Evaluate on train set
-        criterion = torch.nn.CrossEntropyLoss(reduction='none')
-        ensemble.eval()
-        ensemble_logits = ensemble(X) #(num_models, batch_size, num_classes)
-        
-        Y_extend = einops.repeat(Y, 'b -> m b', m = ensemble_logits.shape[0])
-        #ensemble_logits_ce = einops.rearrange(ensemble_logits, 'm b c -> (m b) c')
-        ensemble_guess = torch.argmax(ensemble_logits, dim=-1) #(num_models, batch_size)
-        ensemble_acc = torch.sum(ensemble_guess == Y_extend, dim=-1) / ensemble_guess.shape[-1] #(num_models
-        
-        Y_extend_flat = einops.rearrange(Y_extend, 'm b -> (m b)')
-        ensemble_logits_flat = einops.rearrange(ensemble_logits, 'm b c -> (m b) c')
-        ensemble_loss_flat = criterion(ensemble_logits_flat, Y_extend_flat) #(num_models)
-        ensemble_loss = einops.reduce(ensemble_loss_flat, '(m b) -> m', 'mean', b = ensemble_guess.shape[-1])
-        
-        moe_logits = einops.reduce(ensemble_logits, 'm b c -> b c', 'mean')
-        moe_guess = torch.argmax(moe_logits, dim=-1)
-        moe_acc = torch.sum(moe_guess == Y).item() / len(moe_guess)
-        moe_loss = criterion(moe_logits, Y).mean().item()
-        
-        stats = {'ensemble_acc': ensemble_acc, 'ensemble_loss': ensemble_loss, 'moe_acc': moe_acc, 'moe_loss': moe_loss}
+        for X, Y in data_loader:
+            ensemble_logits = ensemble(X)  # (num_models, batch_size, num_classes)
+
+            Y_extend = einops.repeat(Y, 'b -> m b', m=ensemble_logits.shape[0])
+            ensemble_guess = torch.argmax(ensemble_logits, dim=-1)  # (num_models, batch_size)
+            ensemble_acc = torch.sum(ensemble_guess == Y_extend, dim=-1)  # (num_models)
+
+            Y_extend_flat = einops.rearrange(Y_extend, 'm b -> (m b)')
+            ensemble_logits_flat = einops.rearrange(ensemble_logits, 'm b c -> (m b) c')
+            ensemble_loss_flat = criterion(ensemble_logits_flat, Y_extend_flat)
+            ensemble_loss = einops.reduce(ensemble_loss_flat, '(m b) -> m', 'mean', b=ensemble_guess.shape[-1])
+
+            moe_logits = einops.reduce(ensemble_logits, 'm b c -> b c', 'mean')
+            moe_guess = torch.argmax(moe_logits, dim=-1)
+            moe_acc = torch.sum(moe_guess == Y)
+            moe_loss = criterion(moe_logits, Y).mean()
+
+            batch_size = X.size(0)
+            total_ensemble_acc += ensemble_acc * batch_size
+            total_ensemble_loss += ensemble_loss * batch_size
+            total_moe_acc += moe_acc
+            total_moe_loss += moe_loss.item() * batch_size
+            total_samples += batch_size
+
+    final_ensemble_acc = total_ensemble_acc / total_samples
+    final_ensemble_loss = total_ensemble_loss / total_samples
+    final_moe_acc = total_moe_acc.item() / total_samples
+    final_moe_loss = total_moe_loss / total_samples
+
+    stats = {
+        'ensemble_acc': final_ensemble_acc,
+        'ensemble_loss': final_ensemble_loss,
+        'moe_acc': final_moe_acc,
+        'moe_loss': final_moe_loss
+    }
+
     return stats
 
 def evaluate_model(model, data_input):
@@ -187,31 +208,20 @@ def evaluate_model(model, data_input):
     criterion = torch.nn.CrossEntropyLoss()
     model.eval()
 
-    # Function to process a single batch of data
-    def process_batch(images, labels):
-        nonlocal correct, total, total_loss
-
-        images, labels = images.to(DEVICE), labels.to(DEVICE)
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        total_loss += loss.item()
-
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-
     with torch.no_grad():
-        if isinstance(data_input, torch.utils.data.DataLoader):
-            # Iterate over the DataLoader
-            for images, labels in data_input:
-                process_batch(images, labels)
-            num_batches = len(data_input)
-        else:
-            # Directly process the batched tensors
-            X, Y = data_input
-            process_batch(X, Y)
-            num_batches = 1
+        for X, y in data_input:
+            
+            X, y = X.to(DEVICE), y.to(DEVICE)
+            y_guess = model(X)
+            loss = criterion(y_guess, y)
+            total_loss += loss.item()
 
+            _, predicted = torch.max(y_guess.data, 1)
+            total += y.size(0)
+            correct += (predicted == y).sum().item()
+            
+        num_batches = len(data_input)
+        
     avg_loss = total_loss / num_batches
     accuracy = correct / total
 
@@ -265,9 +275,22 @@ class CustomDataset(Dataset):
         label_batch = self.targets[idx]
         return data_batch, label_batch
 
+def log_artifacts(artifacts, cfg=None):
+    base_dir = f"artifacts/{cfg.wandb_project}"
+    os.makedirs(base_dir, exist_ok=True)
+    run_id = wandb.run.id
+    # Save ULPs and meta_classifier
+    for name, artifact in artifacts.items():
+        torch.save(artifact, f'./{base_dir}/{name}_{run_id}.pth')
+        name_artifact = wandb.Artifact(name, type='model')
+        name_artifact.add_file(f'./{base_dir}/{name}_{run_id}.pth')
+        wandb.log_artifact(name_artifact)
+
+        
+transform = transforms.ToTensor()
         
 class GPUDataset(Dataset):
-    def __init__(self, dataset, transform=None):
+    def __init__(self, dataset, device='cuda',transform=transform):
         """
         Initialize the dataset by applying transformations and then loading all data to the GPU.
         """
@@ -281,10 +304,10 @@ class GPUDataset(Dataset):
             transformed_images.append(img)
 
         # Stack all the images and move to GPU
-        self.data = torch.stack(transformed_images).to('cuda')
+        self.data = torch.stack(transformed_images).to(device)
 
         # Convert targets to tensor and move to GPU
-        self.targets = torch.tensor(dataset.targets).to('cuda')
+        self.targets = torch.tensor(dataset.targets).to(device)
 
     def __len__(self):
         """
@@ -317,7 +340,34 @@ cifar10_transform = transforms.Compose([
 ])
 
 
+def init_model(cfg):
+    if cfg.dataset == "mnist":
+        model = MNIST_Net().to(DEVICE)
+    elif cfg.dataset == "cifar10":
+        model = CNN_classifier(**asdict(dq.cnn_cfg)).to(DEVICE)
+    else:
+        raise ValueError(f"Unknown dataset: {cfg.dataset}")
+    return model
 
+def load_datasets(train=True, cfg=None):
+    if cfg.dataset == "mnist":
+        raw_dataset = MNIST(root='./data', train=train, download=True, transform=None)
+        dataset = CustomDataset(raw_dataset.data.unsqueeze(-1), raw_dataset.targets)
+        
+    elif cfg.dataset == "cifar10":
+        dataset = CIFAR10(root='./data', train=train, download=True, transform=None)
+    
+    else:
+        raise ValueError(f"Unknown dataset: {cfg.dataset}")
+    
+    # Convert .data to numpy array if it is not already
+    if not isinstance(dataset.data, np.ndarray):
+        dataset.data = np.array(dataset.data)
+    # Convert .targets to numpy array if it is not already
+    if not isinstance(dataset.targets, np.ndarray):
+        dataset.targets = np.array(dataset.targets)
+    
+    return dataset
 
 
 def batch_load_models(paths):
